@@ -234,8 +234,6 @@ github.com/shirou/gopsutil v3.21.11+incompatible/go.mod h1:5b4v6he4MtMOwMlS0TUMT
 github.com/sirupsen/logrus v1.2.0/go.mod h1:LxeOpSwHxABJmUn/MG1IvRgCAasNZTLOkJPxbbu5VWo=
 github.com/sirupsen/logrus v1.4.2/go.mod h1:tLMulIdttU9McNUspp0xgXVQah82FyeX6MwdIuYE2rE=
 github.com/sirupsen/logrus v1.6.0/go.mod h1:7uNnSEd1DgxDLC74fIahvMZmmYsHGZGEOFrfsX/uA88=
-github.com/smallnest/ringbuffer v0.1.1 h1:KL2iILLdDCr9nWxYrNcsQ7Px7EVnoNBDJ0r/M/hEksA=
-github.com/smallnest/ringbuffer v0.1.1/go.mod h1:tAG61zBM1DYRaGIPloumExGvScf08oHuo0kFoOqdbT0=
 github.com/smarty/go-disruptor v0.5.0 h1:IXmU+aDqgKqGe2KiJpNdygMAySXDrJ2AlVMQxW7Yu4o=
 github.com/smarty/go-disruptor v0.5.0/go.mod h1:8lklhC0JmtvazuW/o7fYhOkk+E2gXqAaon8ov+/CfkE=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=

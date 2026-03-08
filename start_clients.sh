@@ -1,7 +1,8 @@
 #!/bin/bash
 
-# 配置部分
-CLIENT_BIN="./client_boomer"
+# 配置部分（与 build.sh 一致：二进制输出到 bin/）
+BIN_DIR="./bin"
+CLIENT_BIN="$BIN_DIR/client_boomer"
 CONFIG_FILE="config.json"
 DEFAULT_NUM_CLIENTS=5
 LOG_DIR="logs"
@@ -54,6 +55,7 @@ case "$1" in
         # 确保二进制文件存在且可执行
         if [ ! -f "$CLIENT_BIN" ]; then
             echo "错误: 未找到 $CLIENT_BIN，正在尝试编译..."
+            mkdir -p "$BIN_DIR"
             go build -o "$CLIENT_BIN" ./cmd/client_boomer
         fi
         start_clients "$2"
@@ -66,6 +68,7 @@ case "$1" in
         sleep 1
         if [ ! -f "$CLIENT_BIN" ]; then
             echo "正在编译 $CLIENT_BIN..."
+            mkdir -p "$BIN_DIR"
             go build -o "$CLIENT_BIN" ./cmd/client_boomer
         fi
         start_clients "$2"

@@ -17,7 +17,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/smallnest/ringbuffer"
 	"github.com/smarty/go-disruptor"
 )
 
@@ -34,9 +33,8 @@ const (
 )
 
 const (
-	QueueChannel    = "channel"
-	QueueRingbuffer = "ringbuffer"
-	QueueDisruptor  = "disruptor"
+	QueueChannel   = "channel"
+	QueueDisruptor = "disruptor"
 )
 
 // 单条数据最大长度，ringbuffer/disruptor 共用
@@ -58,16 +56,14 @@ type disruptorSlot struct {
 }
 
 type Session struct {
-	ID          uint32
-	Conn        *net.UDPConn // 在动态端口模式下使用
-	BackendConn *net.UDPConn // 到目标服务器的连接
-	TargetAddr  *net.UDPAddr
-	ClientAddr  atomic.Value // 存储 *net.UDPAddr，用于回包
-	Done        chan struct{}
-	LastActive  int64 // UnixNano
-
+	ID            uint32
+	Conn          *net.UDPConn // 在动态端口模式下使用
+	BackendConn   *net.UDPConn // 到目标服务器的连接
+	TargetAddr    *net.UDPAddr
+	ClientAddr    atomic.Value // 存储 *net.UDPAddr，用于回包
+	Done          chan struct{}
+	LastActive    int64 // UnixNano
 	DataChan      chan *DataPacket
-	DataRB        *ringbuffer.RingBuffer
 	DisruptorInst disruptor.Disruptor
 	DisruptorRing [disruptorBufferSize]disruptorSlot
 }
@@ -126,37 +122,6 @@ func (s *Session) startTask(conn *net.UDPConn, initialClientAddr *net.UDPAddr) {
 			}
 		}
 	}
-	if s.DataRB != nil {
-		lenBuf := make([]byte, 4)
-		readBuf := make([]byte, maxDataLen)
-		for {
-			for got := 0; got < 4; {
-				n, err := s.DataRB.Read(lenBuf[got:])
-				if err != nil {
-					if s.BackendConn != nil {
-						s.BackendConn.Close()
-					}
-					return
-				}
-				got += n
-			}
-			dataLen := int(binary.BigEndian.Uint32(lenBuf))
-			if dataLen <= 0 || dataLen > maxDataLen {
-				continue
-			}
-			for got := 0; got < dataLen; {
-				n, err := s.DataRB.Read(readBuf[got:dataLen])
-				if err != nil {
-					if s.BackendConn != nil {
-						s.BackendConn.Close()
-					}
-					return
-				}
-				got += n
-			}
-			_, _ = s.BackendConn.Write(readBuf[:dataLen])
-		}
-	}
 	if s.DisruptorInst != nil {
 		go s.DisruptorInst.Listen()
 		<-s.Done
@@ -198,7 +163,7 @@ var (
 	handlerLock  sync.Mutex
 	lastID       uint32
 	mode         string // "fixed" or "dynamic"
-	queueMode    string // "channel" | "ringbuffer" | "disruptor"，仅 fixed 模式有效
+	queueMode    string // "channel" | "disruptor"，仅 fixed 模式有效
 	listenIP     string
 )
 
@@ -212,8 +177,8 @@ func main() {
 	flag.IntVar(&fixedPorts, "fixed-ports", 10, "Number of fixed ports to listen on in fixed mode")
 	flag.Parse()
 
-	if mode == "fixed" && queueMode != QueueChannel && queueMode != QueueRingbuffer && queueMode != QueueDisruptor {
-		fmt.Printf("invalid -queue=%s, use channel, ringbuffer, or disruptor\n", queueMode)
+	if mode == "fixed" && queueMode != QueueChannel && queueMode != QueueDisruptor {
+		fmt.Printf("invalid -queue=%s, use channel, or disruptor\n", queueMode)
 		return
 	}
 	fmt.Printf("Starting UDP Echo Server in %s mode", mode)
@@ -259,9 +224,6 @@ func cleanIdleSessions() {
 				if now-atomic.LoadInt64(&session.LastActive) > int64(timeout) {
 					fmt.Printf("Session %d on %v timed out, cleaning up...\n", id, h.conn.LocalAddr())
 					close(session.Done)
-					if session.DataRB != nil {
-						session.DataRB.CloseWithError(fmt.Errorf("session closed"))
-					}
 					if session.DisruptorInst != nil {
 						_ = session.DisruptorInst.Close()
 					}
@@ -384,8 +346,6 @@ func (h *PortHandler) handleHandshake(remoteAddr *net.UDPAddr, payload []byte) {
 		switch queueMode {
 		case QueueChannel:
 			session.DataChan = make(chan *DataPacket, 100)
-		case QueueRingbuffer:
-			session.DataRB = ringbuffer.New(64 * 1024).SetBlocking(true)
 		case QueueDisruptor:
 			handler := &sessionDisruptorHandler{session: session}
 			inst, err := disruptor.New(
@@ -431,14 +391,6 @@ func (h *PortHandler) handleData(remoteAddr *net.UDPAddr, id uint32, data []byte
 		case session.DataChan <- packet:
 		default:
 			fmt.Printf("Session %d data channel full, dropping packet\n", id)
-		}
-	case QueueRingbuffer:
-		lenBuf := make([]byte, 4)
-		binary.BigEndian.PutUint32(lenBuf, uint32(len(data)))
-		_, _ = session.DataRB.Write(lenBuf)
-		for written := 0; written < len(data); {
-			n, _ := session.DataRB.Write(data[written:])
-			written += n
 		}
 	case QueueDisruptor:
 		upper := session.DisruptorInst.Reserve(1)

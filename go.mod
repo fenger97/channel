@@ -4,7 +4,6 @@ go 1.26
 
 require (
 	github.com/myzhan/boomer v1.6.1-0.20250711115830-8a2c7ce4c7b1
-	github.com/smallnest/ringbuffer v0.1.1
 	github.com/smarty/go-disruptor v0.5.0
 )
 

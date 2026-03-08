@@ -1,0 +1,35 @@
+# 日志目录
+logs/
+
+# 编译输出目录（所有二进制文件输出到此目录）
+bin/
+
+# 根目录下可能遗留的二进制（兼容旧构建）
+/server
+/client_boomer
+/bench_buffer
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# IDE / 编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
