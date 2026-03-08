@@ -16,8 +16,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/smarty/go-disruptor"
 )
 
 // 协议说明: 17 字节 Header
@@ -33,39 +31,26 @@ const (
 )
 
 const (
-	QueueChannel   = "channel"
-	QueueDisruptor = "disruptor"
+	QueueChannel = "channel"
 )
 
 // 单条数据最大长度，ringbuffer/disruptor 共用
 const maxDataLen = 2048
-
-// disruptor 单 session 的 ring 大小（2 的幂）
-const disruptorBufferSize = 256
-const disruptorBufferMask = disruptorBufferSize - 1
 
 type DataPacket struct {
 	RemoteAddr *net.UDPAddr
 	Data       []byte
 }
 
-// disruptor 槽位：供 producer 写入、consumer 读出
-type disruptorSlot struct {
-	Data [maxDataLen]byte
-	Len  int
-}
-
 type Session struct {
-	ID            uint32
-	Conn          *net.UDPConn // 在动态端口模式下使用
-	BackendConn   *net.UDPConn // 到目标服务器的连接
-	TargetAddr    *net.UDPAddr
-	ClientAddr    atomic.Value // 存储 *net.UDPAddr，用于回包
-	Done          chan struct{}
-	LastActive    int64 // UnixNano
-	DataChan      chan *DataPacket
-	DisruptorInst disruptor.Disruptor
-	DisruptorRing [disruptorBufferSize]disruptorSlot
+	ID          uint32
+	Conn        *net.UDPConn // 在动态端口模式下使用
+	BackendConn *net.UDPConn // 到目标服务器的连接
+	TargetAddr  *net.UDPAddr
+	ClientAddr  atomic.Value // 存储 *net.UDPAddr，用于回包
+	Done        chan struct{}
+	LastActive  int64 // UnixNano
+	DataChan    chan *DataPacket
 }
 
 func (s *Session) startTask(conn *net.UDPConn, initialClientAddr *net.UDPAddr) {
@@ -122,33 +107,11 @@ func (s *Session) startTask(conn *net.UDPConn, initialClientAddr *net.UDPAddr) {
 			}
 		}
 	}
-	if s.DisruptorInst != nil {
-		go s.DisruptorInst.Listen()
-		<-s.Done
-		_ = s.DisruptorInst.Close()
-		if s.BackendConn != nil {
-			s.BackendConn.Close()
-		}
-		return
-	}
+
 	// 动态模式：无队列
 	<-s.Done
 	if s.BackendConn != nil {
 		s.BackendConn.Close()
-	}
-}
-
-// sessionDisruptorHandler 实现 disruptor.Handler，从 session 的 ring 读出并写入 BackendConn
-type sessionDisruptorHandler struct {
-	session *Session
-}
-
-func (h *sessionDisruptorHandler) Handle(lower, upper int64) {
-	for seq := lower; seq <= upper; seq++ {
-		slot := &h.session.DisruptorRing[seq&disruptorBufferMask]
-		if slot.Len > 0 && slot.Len <= maxDataLen {
-			_, _ = h.session.BackendConn.Write(slot.Data[:slot.Len])
-		}
 	}
 }
 
@@ -163,7 +126,7 @@ var (
 	handlerLock  sync.Mutex
 	lastID       uint32
 	mode         string // "fixed" or "dynamic"
-	queueMode    string // "channel" | "disruptor"，仅 fixed 模式有效
+	queueMode    string // "channel"，仅 fixed 模式有效
 	listenIP     string
 )
 
@@ -177,8 +140,8 @@ func main() {
 	flag.IntVar(&fixedPorts, "fixed-ports", 10, "Number of fixed ports to listen on in fixed mode")
 	flag.Parse()
 
-	if mode == "fixed" && queueMode != QueueChannel && queueMode != QueueDisruptor {
-		fmt.Printf("invalid -queue=%s, use channel, or disruptor\n", queueMode)
+	if mode == "fixed" && queueMode != QueueChannel {
+		fmt.Printf("invalid -queue=%s, use channel\n", queueMode)
 		return
 	}
 	fmt.Printf("Starting UDP Echo Server in %s mode", mode)
@@ -224,9 +187,6 @@ func cleanIdleSessions() {
 				if now-atomic.LoadInt64(&session.LastActive) > int64(timeout) {
 					fmt.Printf("Session %d on %v timed out, cleaning up...\n", id, h.conn.LocalAddr())
 					close(session.Done)
-					if session.DisruptorInst != nil {
-						_ = session.DisruptorInst.Close()
-					}
 					delete(h.sessions, id)
 				}
 			}
@@ -346,19 +306,6 @@ func (h *PortHandler) handleHandshake(remoteAddr *net.UDPAddr, payload []byte) {
 		switch queueMode {
 		case QueueChannel:
 			session.DataChan = make(chan *DataPacket, 100)
-		case QueueDisruptor:
-			handler := &sessionDisruptorHandler{session: session}
-			inst, err := disruptor.New(
-				disruptor.Options.BufferCapacity(disruptorBufferSize),
-				disruptor.Options.WriterCount(1),
-				disruptor.Options.NewHandlerGroup(handler),
-			)
-			if err != nil {
-				fmt.Printf("Session %d disruptor New: %v\n", newID, err)
-				backendConn.Close()
-				return
-			}
-			session.DisruptorInst = inst
 		}
 		go session.startTask(h.conn, remoteAddr)
 
@@ -392,11 +339,6 @@ func (h *PortHandler) handleData(remoteAddr *net.UDPAddr, id uint32, data []byte
 		default:
 			fmt.Printf("Session %d data channel full, dropping packet\n", id)
 		}
-	case QueueDisruptor:
-		upper := session.DisruptorInst.Reserve(1)
-		slot := &session.DisruptorRing[upper&disruptorBufferMask]
-		slot.Len = copy(slot.Data[:], data)
-		session.DisruptorInst.Commit(upper, upper)
 	}
 }
 

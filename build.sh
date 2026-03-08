@@ -27,7 +27,7 @@ build_server() {
     echo "正在编译 server..."
     go build -o "$SERVER_BIN" ./cmd/server
     echo "  -> $SERVER_BIN"
-    echo "  启动示例: $SERVER_BIN -mode fixed -queue channel|disruptor (需在项目根目录执行)"
+    echo "  启动示例: $SERVER_BIN -mode fixed -queue channel (需在项目根目录执行)"
 }
 
 build_client() {
