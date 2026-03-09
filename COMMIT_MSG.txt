@@ -1,0 +1,6 @@
+feat(server): 从 config 文件读取配置，命令行标志优先
+
+- 支持从 config.json 的 "server" 段读取：mode, listen_ip, start_port, fixed_ports, padding_bytes, pprof_port
+- 通过 -config 指定配置文件路径，默认 config.json；先应用配置再解析标志，命令行覆盖配置文件
+- 新增 -pprof-port，pprof 端口可配置
+- config.json 增加 server 示例段；README 增加「Server 配置」说明与配置项表格

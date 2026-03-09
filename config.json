@@ -1,4 +1,12 @@
 {
+    "server": {
+        "mode": "fixed",
+        "listen_ip": "0.0.0.0",
+        "start_port": 3000,
+        "fixed_ports": 10,
+        "padding_bytes": 32776,
+        "pprof_port": 6060
+    },
     "warp_ip": "192.168.0.30",
     "warp_port_min": 3000,
     "warp_port_max": 3010,

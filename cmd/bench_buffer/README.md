@@ -41,3 +41,16 @@ go build -o bench_buffer ./cmd/bench_buffer
 ## 输出说明
 
 对 channel、ringbuffer、disruptor 各跑 5 轮，输出平均耗时、单条 ns/op 和 msg/s。
+
+## 32KB 与 channel 性能（large_object_32k_test.go）
+
+对比「小对象 Session」与「大对象 Session」下 channel 的吞吐（与项目根 README「性能说明」一致）：
+
+- **BenchmarkChannelSmallObject**：50 个 <32KB 的 Session，各用 channel 传 2000 条消息，可能 false sharing。
+- **BenchmarkChannelLargeObject**：50 个 >32KB 的 Session，走 large object，减少 false sharing。
+
+每次迭代共 50×2000 条消息；ns/op 越小或 msg/s（≈1e14/ns/op）越高越好。
+
+```bash
+go test -bench='BenchmarkChannel' -benchmem ./cmd/bench_buffer/
+```

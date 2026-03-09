@@ -1,18 +1,19 @@
-// Server：UDP 代理，固定模式支持 -queue=channel|ringbuffer|disruptor。
+// Server：UDP 代理，固定模式使用 channel 转发数据。
 //
-// 已知可复现现象：若将 disruptor 相关代码注释掉后仅保留 channel+ringbuffer 编译，
-// 同一环境下 -queue=channel 的吞吐会明显低于“三种模式均参与编译”时的 channel。
-// 推测与二进制中代码/数据布局或编译器对 channel 热路径的优化差异有关。
-// 若需稳定的 channel 基线，请保持本文件中 channel/ringbuffer/disruptor 均参与编译，仅通过 -queue 选择运行哪种。
+// 性能结论（见项目 README）：Session 需保持体积 >32KB，使 Go 按 large object 分配，
+// 避免多 Session 间 false sharing，channel 热路径性能才稳定。用同尺寸 Padding 即可达到该效果。
 package main
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,12 +31,8 @@ const (
 	TypeReply     uint8 = 3
 )
 
-const (
-	QueueChannel = "channel"
-)
-
-// 单条数据最大长度，ringbuffer/disruptor 共用
-const maxDataLen = 2048
+// 默认 padding 使 Session 总大小超过 32KB（Go 的 large object 阈值），见 README「性能说明」。
+const defaultPaddingBytes = 32*1024 + 8
 
 type DataPacket struct {
 	RemoteAddr *net.UDPAddr
@@ -51,6 +48,8 @@ type Session struct {
 	Done        chan struct{}
 	LastActive  int64 // UnixNano
 	DataChan    chan *DataPacket
+	// 保持 Session 体积可调（-padding-bytes），>32KB 时按 large object 分配，避免 false sharing。
+	Padding []byte
 }
 
 func (s *Session) startTask(conn *net.UDPConn, initialClientAddr *net.UDPAddr) {
@@ -126,40 +125,115 @@ var (
 	handlerLock  sync.Mutex
 	lastID       uint32
 	mode         string // "fixed" or "dynamic"
-	queueMode    string // "channel"，仅 fixed 模式有效
 	listenIP     string
+	startPort    int
+	fixedPorts   int
+	paddingBytes int // Session.Padding 大小，由配置或 -padding-bytes 指定
+	pprofPort    int // pprof 监听端口
 )
 
-func main() {
-	var portRangeStart int
-	var fixedPorts int
-	flag.StringVar(&mode, "mode", "fixed", "Test mode: fixed or dynamic")
-	flag.StringVar(&queueMode, "queue", "channel", "In fixed mode: channel, ringbuffer, or disruptor")
-	flag.StringVar(&listenIP, "listen-ip", "0.0.0.0", "IP address to listen on")
-	flag.IntVar(&portRangeStart, "start-port", 10000, "Starting port for listeners")
-	flag.IntVar(&fixedPorts, "fixed-ports", 10, "Number of fixed ports to listen on in fixed mode")
-	flag.Parse()
+// serverConfig 与 config 文件中 "server" 段对应
+type serverConfig struct {
+	Mode         string `json:"mode"`
+	ListenIP     string `json:"listen_ip"`
+	StartPort    int    `json:"start_port"`
+	FixedPorts   int    `json:"fixed_ports"`
+	PaddingBytes int    `json:"padding_bytes"`
+	PprofPort    int    `json:"pprof_port"`
+}
 
-	if mode == "fixed" && queueMode != QueueChannel {
-		fmt.Printf("invalid -queue=%s, use channel\n", queueMode)
+func loadServerConfig(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			fmt.Printf("Warning: read config %s: %v\n", path, err)
+		}
 		return
 	}
-	fmt.Printf("Starting UDP Echo Server in %s mode", mode)
-	if mode == "fixed" {
-		fmt.Printf(" (queue=%s)", queueMode)
+	var wrap struct {
+		Server *serverConfig `json:"server"`
 	}
-	fmt.Println("...")
+	if err := json.Unmarshal(data, &wrap); err != nil {
+		fmt.Printf("Warning: parse config %s: %v\n", path, err)
+		return
+	}
+	if wrap.Server == nil {
+		return
+	}
+	s := wrap.Server
+	if s.Mode != "" {
+		mode = s.Mode
+	}
+	if s.ListenIP != "" {
+		listenIP = s.ListenIP
+	}
+	if s.StartPort > 0 {
+		startPort = s.StartPort
+	}
+	if s.FixedPorts > 0 {
+		fixedPorts = s.FixedPorts
+	}
+	if s.PaddingBytes >= 0 {
+		paddingBytes = s.PaddingBytes
+	}
+	if s.PprofPort > 0 {
+		pprofPort = s.PprofPort
+	}
+}
+
+func getConfigPathFromArgs() string {
+	for i, arg := range os.Args[1:] {
+		if arg == "-config" && i+2 < len(os.Args) {
+			return os.Args[i+2]
+		}
+		if strings.HasPrefix(arg, "-config=") {
+			return strings.TrimPrefix(arg, "-config=")
+		}
+	}
+	return "config.json"
+}
+
+func main() {
+	// 默认值，随后由配置文件覆盖，最后被命令行标志覆盖
+	mode = "fixed"
+	listenIP = "0.0.0.0"
+	startPort = 10000
+	fixedPorts = 10
+	paddingBytes = defaultPaddingBytes
+	pprofPort = 6060
+
+	loadServerConfig(getConfigPathFromArgs())
+
+	var configPath string
+	flag.StringVar(&configPath, "config", "config.json", "Path to config file (server section)")
+	flag.StringVar(&mode, "mode", mode, "Test mode: fixed or dynamic")
+	flag.StringVar(&listenIP, "listen-ip", listenIP, "IP address to listen on")
+	flag.IntVar(&startPort, "start-port", startPort, "Starting port for listeners")
+	flag.IntVar(&fixedPorts, "fixed-ports", fixedPorts, "Number of fixed ports to listen on in fixed mode")
+	flag.IntVar(&paddingBytes, "padding-bytes", paddingBytes, "Session padding size in bytes (e.g. >32768 for large object, 0 to disable)")
+	flag.IntVar(&pprofPort, "pprof-port", pprofPort, "Pprof HTTP server port")
+	flag.Parse()
+
+	if paddingBytes < 0 {
+		paddingBytes = 0
+	}
+	if pprofPort <= 0 {
+		pprofPort = 6060
+	}
+
+	fmt.Printf("Starting UDP Echo Server in %s mode (padding-bytes=%d)", mode, paddingBytes)
 
 	// 统一不论模式如何，都监听 fixedPorts 数量的入口
 	for i := 0; i < fixedPorts; i++ {
-		port := portRangeStart + i
+		port := startPort + i
 		go listenFixed(port)
 	}
 
 	// 启动 pprof 监听
 	go func() {
-		fmt.Println("Pprof server starting on :6060")
-		if err := http.ListenAndServe("0.0.0.0:6060", nil); err != nil {
+		addr := fmt.Sprintf("0.0.0.0:%d", pprofPort)
+		fmt.Printf("Pprof server starting on %s\n", addr)
+		if err := http.ListenAndServe(addr, nil); err != nil {
 			fmt.Printf("Pprof server failed: %v\n", err)
 		}
 	}()
@@ -272,6 +346,9 @@ func (h *PortHandler) handleHandshake(remoteAddr *net.UDPAddr, payload []byte) {
 		TargetAddr:  targetUDPAddr,
 		BackendConn: backendConn,
 	}
+	if paddingBytes > 0 {
+		session.Padding = make([]byte, paddingBytes)
+	}
 	session.ClientAddr.Store(remoteAddr)
 
 	if mode == "dynamic" {
@@ -301,12 +378,8 @@ func (h *PortHandler) handleHandshake(remoteAddr *net.UDPAddr, payload []byte) {
 			h.conn.WriteToUDP(resp, remoteAddr)
 		}
 	} else {
-		// 固定模式：按 -queue 创建 channel / ringbuffer / disruptor
 		session.Done = make(chan struct{})
-		switch queueMode {
-		case QueueChannel:
-			session.DataChan = make(chan *DataPacket, 100)
-		}
+		session.DataChan = make(chan *DataPacket, 100)
 		go session.startTask(h.conn, remoteAddr)
 
 		resp := make([]byte, 5)
@@ -331,14 +404,11 @@ func (h *PortHandler) handleData(remoteAddr *net.UDPAddr, id uint32, data []byte
 	atomic.StoreInt64(&session.LastActive, time.Now().UnixNano())
 	session.ClientAddr.Store(remoteAddr)
 
-	switch queueMode {
-	case QueueChannel:
-		packet := &DataPacket{RemoteAddr: remoteAddr, Data: append([]byte(nil), data...)}
-		select {
-		case session.DataChan <- packet:
-		default:
-			fmt.Printf("Session %d data channel full, dropping packet\n", id)
-		}
+	packet := &DataPacket{RemoteAddr: remoteAddr, Data: append([]byte(nil), data...)}
+	select {
+	case session.DataChan <- packet:
+	default:
+		fmt.Printf("Session %d data channel full, dropping packet\n", id)
 	}
 }
 
